@@ -1,7 +1,6 @@
 package com.baiwanlu.android.network.base;
 
 import android.net.Uri;
-import android.support.annotation.NonNull;
 import android.text.TextUtils;
 
 import com.alibaba.fastjson.TypeReference;
@@ -214,7 +213,7 @@ public abstract class BaseRequest<T> {
      * @return
      */
     protected abstract int getRequestMethod();
-    @NonNull
+
     protected abstract String getRequestUrl();
 
     protected abstract TypeReference<T> getTypeReference();
