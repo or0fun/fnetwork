@@ -1,6 +1,7 @@
 package com.baiwanlu.android.network.base;
 
 import android.net.Uri;
+import android.support.annotation.NonNull;
 import android.text.TextUtils;
 
 import com.alibaba.fastjson.TypeReference;
@@ -12,34 +13,49 @@ import com.android.volley.TimeoutError;
 import com.android.volley.VolleyError;
 import com.android.volley.toolbox.HttpHeaderParser;
 import com.baiwanlu.android.network.FNetworkError;
+import com.baiwanlu.android.network.IRequestInjector;
+import com.baiwanlu.android.network.base.multipart.MultipartRequestParams;
 import com.baiwanlu.android.network.utils.FNetworkLog;
+import com.baiwanlu.android.network.utils.FNetworkUtil;
 
+import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Created by benren.fj on 6/12/16.
+ * Created by lufei on 3/23/16.
  */
 public abstract class BaseRequest<T> {
+
+    private String TAG = "BaseRequest";
 
     protected final static int GET = Request.Method.GET;
     protected final static int POST = Request.Method.POST;
 
     protected Request httpRequest;
-    protected boolean stopped;
     protected IRequestCallBack<T> callBack;
-    TypeReference<T> typeReference;
-    Class<T> clazz;
 
-    Map<String, String> params = new HashMap<String, String>();
+    protected IRequestInjector requestInjector;
+
+    MultipartRequestParams multipartRequestParams = new MultipartRequestParams();
 
     long startTime;
     long endTime;
 
-    public BaseRequest(IRequestCallBack<T> callBack) {
+    boolean isRunning = false;
+
+    public BaseRequest() {
         startTime = System.currentTimeMillis();
+    }
+
+    public BaseRequest<T> setCallBack(IRequestCallBack<T> callBack) {
         this.callBack = callBack;
+        return this;
+    }
+
+    public void setRequestInjector(IRequestInjector requestInjector) {
+        this.requestInjector = requestInjector;
     }
 
     /**
@@ -69,25 +85,43 @@ public abstract class BaseRequest<T> {
             builder.appendQueryParameter(entry.getKey(), entry.getValue());
         }
         String realUrl = builder.build().toString();
-        FNetworkLog.d("RealUrl:", realUrl);
+        FNetworkLog.d(TAG, "RealUrl:", realUrl);
         return realUrl;
     }
 
     public void stop() {
-        stopped = true;
+        isRunning = false;
         if (null != httpRequest) {
             RequestManager.getInstance().cancelRequest(httpRequest);
+            httpRequest = null;
         }
     }
 
+    public boolean isRunning() {
+        return isRunning;
+    }
+
     public void start() {
-        if (stopped) {
+        if (isRunning()) {
+            stop();
+        }
+        isRunning = true;
+
+        if (!FNetworkUtil.isNetworkAvailable(RequestManager.getContext())) {
+            if (isRunning && null != callBack) {
+                callBack.onResponseError(FNetworkError.ERROR_UNAVAILABLE);
+            }
+            isRunning = false;
             return;
         }
 
         try {
             httpRequest = createRequest();
             if (null == httpRequest) {
+                if (isRunning && null != callBack) {
+                    callBack.onResponseError(FNetworkError.ERROR_REQUEST_EMPTY);
+                }
+                isRunning = false;
                 return;
             }
             httpRequest.setRetryPolicy(new DefaultRetryPolicy(
@@ -98,6 +132,10 @@ public abstract class BaseRequest<T> {
             RequestManager.getInstance().addToRequestQueue(httpRequest);
         }catch (Throwable throwable) {
             FNetworkLog.e(throwable);
+            if (isRunning && null != callBack) {
+                callBack.onResponseError(FNetworkError.ERROR_UNKNOWN);
+            }
+            isRunning = false;
         }
     }
 
@@ -107,118 +145,134 @@ public abstract class BaseRequest<T> {
             return null;
         }
 
-        Map<String, String> params = getParams();
-        if (null == params) {
-            params = new HashMap<String, String>();
-        }
-
         int method = getRequestMethod();
 
         Response.Listener<T> listener = new Response.Listener<T>() {
             @Override
             public void onResponse(T response) {
-                if (!stopped && null != callBack) {
+                if (isRunning && null != callBack) {
+                    isRunning = false;
                     if (null == response) {
                         FNetworkLog.e(BaseRequest.this.getRequestUrl(), "parse error！！");
+                        callBack.onResponseError(FNetworkError.ERROR_UNKNOWN);
                     } else {
-                        FNetworkLog.d("response", response.toString());
+                        FNetworkLog.d(TAG, response.getClass().toString());
+                        FNetworkLog.d(TAG, response.toString());
                         callBack.onResponseSuccess(parseResponse(response));
                         endTime = System.currentTimeMillis();
-                        FNetworkLog.d("BaseRequest", String.valueOf(endTime - startTime));
+                        FNetworkLog.d(TAG, String.valueOf(endTime - startTime));
 
                     }
                 }
+                isRunning = false;
             }
         };
         Response.ErrorListener errorListener = new Response.ErrorListener() {
             @Override
             public void onErrorResponse(VolleyError error) {
-                FNetworkLog.e("BaseRequest", error.toString());
+                FNetworkLog.e(TAG, error.toString());
 
                 try {
                     if (null != error.networkResponse) {
                         String json = new String(error.networkResponse.data, HttpHeaderParser.parseCharset(error.networkResponse.headers));
-                        FNetworkLog.e("BaseRequest", json);
+                        FNetworkLog.e(TAG, json);
                     }
                 } catch (UnsupportedEncodingException e) {
-                    FNetworkLog.e("BaseRequest", e);
+                    FNetworkLog.e(e);
                 }
-                if (!stopped && null != callBack) {
+                if (isRunning && null != callBack) {
+                    isRunning = false;
                     if (error instanceof ParseError) {
                         callBack.onResponseError(FNetworkError.ERROR_PARSE_FAILED);
-                    }else if (error instanceof TimeoutError) {
+                    } else if (error instanceof TimeoutError) {
                         callBack.onResponseError(FNetworkError.ERROR_TIMEOUT);
-                    }else {
+                    } else if (null != requestInjector && requestInjector.isUnauthorized(error.networkResponse)) {
+                        callBack.onResponseError(FNetworkError.ERROR_NO_LOGIN);
+                    } else {
                         callBack.onResponseError(FNetworkError.ERROR_UNKNOWN);
                     }
                 }
+                isRunning = false;
             }
         };
 
-        FNetworkLog.d("request:", url);
-        FNetworkLog.d("request params:", params.toString());
+        Map<String, String> params = getParams();
+        if (null == params) {
+            params = new HashMap<String, String>();
+        }
 
-        typeReference = getTypeReference();
+        FNetworkLog.d(TAG, "request:", url);
+        FNetworkLog.d(TAG, "request params:", params.toString());
+
         if (GET == method) {
-            if (null != typeReference) {
-                return new FastJsonRequest(method, getRealUrl(url, params), typeReference, listener, errorListener);
-            } else {
-                return new FastJsonRequest(method, getRealUrl(url, params), clazz, listener, errorListener);
-            }
+            return new FastJsonRequest(method, getRealUrl(url, params),
+                    getTypeReference(), listener, errorListener, requestInjector);
         }
-        if (null != typeReference) {
-            return new FastJsonRequest<T>(method, url, params, typeReference, listener, errorListener);
-        } else {
-            return new FastJsonRequest<T>(method, url, params, clazz, listener, errorListener);
+        if (multipartRequestParams.hasFile() || isMultipartRequest()) {
+            return new FastJsonRequest(method, url, multipartRequestParams,
+                    getTypeReference(), listener, errorListener, requestInjector);
         }
+        return new FastJsonRequest(method, url, params,
+                getTypeReference(), listener, errorListener, requestInjector);
+
     }
 
-    public BaseRequest addParam(String key, String value) {
-        params.put(key, value);
+    public BaseRequest<T> addParam(String key, String value) {
+        multipartRequestParams.put(key, value);
         return this;
     }
 
-    public BaseRequest addParam(String key, int value) {
-        params.put(key, String.valueOf(value));
+    public BaseRequest<T> addParam(String key, int value) {
+        multipartRequestParams.put(key, String.valueOf(value));
         return this;
     }
 
-    public BaseRequest addParam(String key, long value) {
-        params.put(key, String.valueOf(value));
+    public BaseRequest<T> addParam(String key, long value) {
+        multipartRequestParams.put(key, String.valueOf(value));
         return this;
     }
 
-    public BaseRequest addParam(String key, double value) {
-        params.put(key, String.valueOf(value));
+    public BaseRequest<T> addParam(String key, double value) {
+        multipartRequestParams.put(key, String.valueOf(value));
         return this;
     }
 
-    public BaseRequest addParam(String key, boolean value) {
-        params.put(key, String.valueOf(value));
+    public BaseRequest<T> addParam(String key, boolean value) {
+        multipartRequestParams.put(key, String.valueOf(value));
         return this;
     }
 
-    public BaseRequest addParams(Map<String, String> params) {
-        if (null != params) {
-            this.params.putAll(params);
-        }
+    public BaseRequest<T> addParams(Map<String, String> params) {
+        this.multipartRequestParams.putAll(params);
         return this;
+    }
+
+    public BaseRequest<T> addFile(String key, File file) {
+        this.multipartRequestParams.put(key, file);
+        return this;
+    }
+
+    public void clearParams() {
+        multipartRequestParams.clear();
     }
 
     protected Map<String, String> getParams() {
-        return params;
+        return multipartRequestParams.getUrlParams();
     }
     /**
      * 从Request.Method 选择值
      * @return
      */
     protected abstract int getRequestMethod();
-
-    protected abstract String getRequestUrl();
+    @NonNull protected abstract String getRequestUrl();
 
     protected abstract TypeReference<T> getTypeReference();
 
     protected T parseResponse(T response) {
         return response;
+    }
+
+    protected boolean isMultipartRequest() {
+        return false;
     }
 }
