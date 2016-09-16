@@ -8,7 +8,13 @@ import com.android.volley.Request;
 import com.android.volley.RequestQueue;
 import com.android.volley.toolbox.ImageLoader;
 import com.android.volley.toolbox.Volley;
+import com.baiwanlu.android.network.base.cookie.PersistentCookieStore;
 
+import java.util.List;
+
+import okhttp3.Cookie;
+import okhttp3.CookieJar;
+import okhttp3.HttpUrl;
 import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 
@@ -28,6 +34,10 @@ public class RequestManager {
 
     private int maxNumRetries = 3;
 
+    private boolean enableCookie = true;
+
+    private PersistentCookieStore cookieStore;
+
     private RequestManager() {
         mRequestQueue = getRequestQueue();
 
@@ -46,6 +56,8 @@ public class RequestManager {
                         cache.put(url, bitmap);
                     }
                 });
+
+        cookieStore = new PersistentCookieStore(appContext);
     }
 
     public static synchronized RequestManager getInstance() {
@@ -75,14 +87,17 @@ public class RequestManager {
         if (mRequestQueue == null) {
             // getApplicationContext() is key, it keeps you from leaking the
             // Activity or BroadcastReceiver if someone passes one in.
-            OkHttpClient client;
+            OkHttpClient.Builder builder = new OkHttpClient.Builder();
             if (null != sInterceptor) {
-                client = new OkHttpClient.Builder()
-                        .addNetworkInterceptor(sInterceptor).build();
-            } else {
-                client = new OkHttpClient();
+                builder.addNetworkInterceptor(sInterceptor)
+                        .cookieJar(cookieJar)
+                        .build();
             }
-            mRequestQueue = Volley.newRequestQueue(appContext, new OkHttp3Stack(client));
+            if (enableCookie) {
+                builder.cookieJar(cookieJar);
+            }
+
+            mRequestQueue = Volley.newRequestQueue(appContext, new OkHttp3Stack(builder.build()));
             mRequestQueue.start();
         }
         return mRequestQueue;
@@ -143,4 +158,46 @@ public class RequestManager {
     public int getMaxNumRetries() {
         return maxNumRetries;
     }
+
+    public void setEnableCookie(boolean enableCookie) {
+        this.enableCookie = enableCookie;
+    }
+
+    public void clearCookie() {
+        cookieStore.removeAll();
+    }
+
+    public List<Cookie> getAllCookie() {
+        return cookieStore.getCookies();
+    }
+
+    public List<Cookie> getCookie(String url) {
+        return cookieStore.get(HttpUrl.parse(url));
+    }
+
+    public void setCookie(String url, List<Cookie> cookies) {
+        if (cookies != null && cookies.size() > 0) {
+            for (Cookie item : cookies) {
+                cookieStore.add(HttpUrl.parse(url), item);
+            }
+        }
+    }
+
+    CookieJar cookieJar = new CookieJar() {
+
+        @Override
+        public void saveFromResponse(HttpUrl url, List<Cookie> cookies) {
+            if (cookies != null && cookies.size() > 0) {
+                for (Cookie item : cookies) {
+                    cookieStore.add(url, item);
+                }
+            }
+        }
+
+        @Override
+        public List<Cookie> loadForRequest(HttpUrl url) {
+            List<Cookie> cookies = cookieStore.getCookies();
+            return cookies;
+        }
+    };
 }
