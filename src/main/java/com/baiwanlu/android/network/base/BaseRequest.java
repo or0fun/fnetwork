@@ -163,8 +163,9 @@ public abstract class BaseRequest<T> {
                         FNetworkLog.d(TAG, String.valueOf(endTime - startTime));
 
                     }
+                }else {
+                    isRunning = false;
                 }
-                isRunning = false;
             }
         };
         Response.ErrorListener errorListener = new Response.ErrorListener() {
@@ -191,8 +192,9 @@ public abstract class BaseRequest<T> {
                     } else {
                         callBack.onResponseError(FNetworkError.ERROR_UNKNOWN);
                     }
+                }else {
+                    isRunning = false;
                 }
-                isRunning = false;
             }
         };
 
